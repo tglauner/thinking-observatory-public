@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { posterior, betExpectedValue, rollDecision, marketQuote, binomialProbability } from '../src/models.js';
+
+const close = (actual, expected, tolerance = 1e-12) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} differs from ${expected}`);
+
+test('one head updates equal coin priors to three fifths', () => close(posterior({ prior: 0.5 }), 0.6));
+test('no observations leave the prior unchanged', () => { for (const prior of [0, 0.1, 0.5, 0.9, 1]) close(posterior({ prior, heads: 0 }), prior); });
+test('one head and one tail favor the fair coin by four to three', () => close(posterior({ prior: 0.5, heads: 1, tails: 1 }), 3 / 7));
+test('posterior respects zero and certain priors for possible observations', () => { assert.equal(posterior({ prior: 0 }), 0); assert.equal(posterior({ prior: 1 }), 1); });
+test('more heads increase belief in the head-biased coin', () => { const values = [1, 2, 3, 4].map(heads => posterior({ prior: 0.2, heads })); assert.ok(values.every((value, index) => index === 0 || value > values[index - 1])); });
+test('larger prior increases posterior under fixed evidence', () => assert.ok(posterior({ prior: 0.8, heads: 2 }) > posterior({ prior: 0.2, heads: 2 })));
+test('log likelihoods remain stable when ordinary likelihoods underflow', () => { const value = posterior({ prior: 0.5, heads: 15000, tails: 5000 }); assert.equal(value, 1); assert.ok(Number.isFinite(value)); });
+test('identical hypotheses preserve the prior', () => close(posterior({ prior: 0.3, heads: 5, tails: 3, fair: 0.6, biased: 0.6 }), 0.3));
+test('impossible evidence under both weighted hypotheses fails explicitly', () => { assert.throws(() => posterior({ prior: 0.5, fair: 0, biased: 0, heads: 1 }), RangeError); assert.throws(() => posterior({ prior: 0, fair: 0, biased: 1, heads: 1 }), RangeError); });
+test('posterior rejects invalid probabilities and observation counts', () => { for (const prior of [-0.1, 1.1, NaN, Infinity, '0.5']) assert.throws(() => posterior({ prior }), RangeError); for (const heads of [-1, 0.5, Infinity]) assert.throws(() => posterior({ prior: 0.5, heads }), RangeError); });
+test('bet expected value uses gross payout and subtracts stake once', () => { close(betExpectedValue(0.6, 2), 0.2); close(betExpectedValue(0.5, 2, 1), 0); close(betExpectedValue(0, 2, 3), -3); close(betExpectedValue(1, 2, 0), 2); });
+test('bet expected value increases with win probability', () => assert.ok(betExpectedValue(0.7, 3, 2) > betExpectedValue(0.3, 3, 2)));
+test('bet rejects negative stakes, payouts, and nonfinite values', () => { assert.throws(() => betExpectedValue(0.5, -2), RangeError); assert.throws(() => betExpectedValue(0.5, 2, -1), RangeError); assert.throws(() => betExpectedValue(0.5, Infinity), RangeError); });
+test('six-sided reroll threshold is three and a half', () => { assert.deepEqual(rollDecision(3), { rerollValue: 3.5, advantage: 0.5, choice: 'reroll' }); assert.deepEqual(rollDecision(4), { rerollValue: 3.5, advantage: -0.5, choice: 'keep' }); });
+test('odd-sided dice support exact indifference', () => assert.deepEqual(rollDecision(3, 5), { rerollValue: 3, advantage: 0, choice: 'indifferent' }));
+test('die inputs must represent possible integer rolls', () => { for (const kept of [0, 7, 1.5, NaN]) assert.throws(() => rollDecision(kept), RangeError); for (const sides of [0, 1.5, Infinity]) assert.throws(() => rollDecision(1, sides), RangeError); });
+test('neutral market quote straddles fair value symmetrically', () => assert.deepEqual(marketQuote(), { reservation: 100, bid: 99, ask: 101 }));
+test('long inventory lowers both quotes without changing the spread', () => { const value = marketQuote({ fairValue: 100, inventory: 20, risk: 0.1, spread: 4 }); assert.deepEqual(value, { reservation: 98, bid: 96, ask: 100 }); });
+test('short inventory raises reservation price and risk zero removes skew', () => { assert.equal(marketQuote({ inventory: -20 }).reservation, 102); assert.equal(marketQuote({ inventory: 20, risk: 0 }).reservation, 100); });
+test('market inputs reject negative spread or risk and overflow', () => { assert.throws(() => marketQuote({ spread: -1 }), RangeError); assert.throws(() => marketQuote({ risk: -1 }), RangeError); assert.throws(() => marketQuote({ inventory: Infinity }), RangeError); assert.throws(() => marketQuote({ inventory: Number.MAX_VALUE, risk: Number.MAX_VALUE }), RangeError); });
+test('binomial fair coin masses match exact combinatorics', () => { close(binomialProbability(5, 2, 0.5), 10 / 32); close(binomialProbability(10, 3, 0.5), 120 / 1024); });
+test('binomial masses sum to one', () => { const total = Array.from({ length: 31 }, (_, k) => binomialProbability(30, k, 0.37)).reduce((sum, value) => sum + value, 0); close(total, 1); });
+test('binomial success and failure symmetry holds', () => close(binomialProbability(25, 7, 0.3), binomialProbability(25, 18, 0.7)));
+test('binomial degenerate distributions and zero trials are well-defined', () => { assert.equal(binomialProbability(0, 0, 0), 1); assert.equal(binomialProbability(4, 0, 0), 1); assert.equal(binomialProbability(4, 1, 0), 0); assert.equal(binomialProbability(4, 4, 1), 1); assert.equal(binomialProbability(4, 3, 1), 0); });
+test('binomial large-trial result stays finite and positive at its mode', () => { const value = binomialProbability(2000, 1000, 0.5); assert.ok(value > 0.017 && value < 0.018); });
+test('binomial rejects impossible or excessively large trial inputs', () => { for (const args of [[-1, 0, 0.5], [5, 6, 0.5], [5.5, 2, 0.5], [5, 2, 1.1], [1_000_001, 0, 0.5]]) assert.throws(() => binomialProbability(...args), RangeError); });
